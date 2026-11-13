@@ -1,0 +1,48 @@
+name: Publish MyOS ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID запуска сборки, из которого взять артефакт myos-iso"
+        required: true
+        default: "43431328676"
+      tag:
+        description: "Тег релиза"
+        required: true
+        default: "myos-2026.11.13"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download ISO artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: myos-iso
+          path: out
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+
+      - name: Show files and unpack if needed
+        run: |
+          ls -lh out
+          if ls out/*.zip >/dev/null 2>&1; then
+            cd out
+            unzip -o *.zip
+            ls -lh
+          fi
+
+      - name: Create release with ISO
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ inputs.tag }}" out/*.iso \
+            --repo "${{ github.repository }}" \
+            --title "MyOS ${{ inputs.tag }}" \
+            --notes "Готовая загрузочная ISO MyOS (Arch Linux + KDE Plasma)."

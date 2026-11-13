@@ -128,6 +128,10 @@ try {
     # ------------------------------------------------------------ загрузка
     Write-Step 'Загружаю проект на GitHub'
     Push-Location $root
+    # git пишет прогресс в stderr; при ErrorActionPreference=Stop PowerShell 5.1
+    # может принять это за ошибку. На время git-команд ослабляем режим.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         if (-not (Test-Path -LiteralPath (Join-Path $root '.git'))) {
             & $Git init -b main | Out-Host
@@ -148,11 +152,13 @@ try {
         }
         & $Git remote add origin "https://github.com/$Repo.git"
         & $Git push -u origin main --force 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw 'git push завершился с ошибкой.' }
+        $pushCode = $LASTEXITCODE
     }
     finally {
+        $ErrorActionPreference = $prevEap
         Pop-Location
     }
+    if ($pushCode -ne 0) { throw 'git push завершился с ошибкой.' }
     & $Gh repo edit $Repo --default-branch main 2>&1 | Out-Null
     Write-Ok 'проект загружен'
 
