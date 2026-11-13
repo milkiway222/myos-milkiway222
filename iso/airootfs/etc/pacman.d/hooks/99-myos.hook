@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Applying MyOS branding and settings...
+When = PostTransaction
+Exec = /bin/bash /usr/local/bin/myos-build-hook

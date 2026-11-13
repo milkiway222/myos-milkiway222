@@ -1,0 +1,6 @@
+[General]
+ColorScheme=BreezeDark
+
+[KDE]
+AnimationDurationFactor=0
+SingleClick=false

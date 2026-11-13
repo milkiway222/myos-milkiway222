@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Создаёт пользователя live-системы. Пароль: myos
+set -u
+
+if ! id myos >/dev/null 2>&1; then
+    useradd -m -c "MyOS" \
+        -G wheel,video,audio,input,storage,optical,network,power \
+        -s /bin/bash myos
+fi
+
+# Пароль выставляем всегда: служба может запускаться повторно,
+# а пользователь мог быть создан pacman-хуком ещё на этапе сборки.
+echo 'myos:myos' | chpasswd
+
+passwd -l root >/dev/null 2>&1 || true
+
+echo 'myos ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/10-myos-live
+chmod 440 /etc/sudoers.d/10-myos-live
+
+# Автостарт установщика не нужен: пользователь сам запускает sudo myos-install.
+echo "[myos] live user готов (логин myos / пароль myos)"

@@ -1,0 +1,83 @@
+# Базовые пакеты MyOS — ставятся и в live-систему, и при установке на диск.
+
+# --- ядро и база ---
+base
+linux
+linux-firmware
+intel-ucode
+amd-ucode
+mkinitcpio
+
+# --- сеть ---
+networkmanager
+wpa_supplicant
+wireless-regdb
+iw
+
+# --- звук ---
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+alsa-ucm-conf
+sof-firmware
+
+# --- bluetooth ---
+bluez
+bluez-utils
+
+# --- графика и видео ---
+mesa
+vulkan-intel
+vulkan-radeon
+intel-media-driver
+
+# --- KDE Plasma ---
+plasma-meta
+sddm
+qt6-wayland
+qt6-tools
+xdg-user-dirs
+
+# --- приложения KDE ---
+dolphin
+konsole
+kate
+ark
+gwenview
+spectacle
+okular
+kcalc
+kdeconnect
+filelight
+partitionmanager
+
+# --- браузер и утилиты ---
+firefox
+git
+sudo
+nano
+vim
+htop
+fastfetch
+man-db
+unzip
+zip
+ntfs-3g
+exfatprogs
+dosfstools
+e2fsprogs
+gptfdisk
+parted
+
+# --- шрифты ---
+noto-fonts
+noto-fonts-emoji
+ttf-liberation
+ttf-dejavu
+
+# --- оптимизация и обслуживание ---
+zram-generator
+power-profiles-daemon
+pacman-contrib
+reflector

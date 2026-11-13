@@ -1,0 +1,12 @@
+[Unit]
+Description=MyOS live user setup
+Before=display-manager.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /usr/local/bin/myos-live-user
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

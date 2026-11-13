@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Один раз выставляет обои рабочего стола KDE Plasma. Пользователь может
+# поменять их вручную — скрипт больше не вмешивается (маркер в ~/.config).
+set -u
+
+WALL="file:///usr/share/wallpapers/MyOS/contents/images/1920x1080.png"
+MARKER="$HOME/.config/myos-wallpaper.done"
+[ -f "$MARKER" ] && exit 0
+
+if ! command -v qdbus6 >/dev/null 2>&1; then
+    exit 0
+fi
+
+if qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
+var ds = desktops();
+for (var i = 0; i < ds.length; i++) {
+    ds[i].wallpaperPlugin = 'org.kde.image';
+    ds[i].currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
+    ds[i].writeConfig('Image', '$WALL');
+}
+" >/dev/null 2>&1; then
+    mkdir -p "$HOME/.config"
+    touch "$MARKER"
+fi

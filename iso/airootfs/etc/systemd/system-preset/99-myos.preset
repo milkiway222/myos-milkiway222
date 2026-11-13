@@ -1,0 +1,9 @@
+# Гарантируем, что нужные службы включены, даже если systemd применит preset-all.
+enable sddm.service
+enable NetworkManager.service
+enable bluetooth.service
+enable systemd-timesyncd.service
+enable fstrim.timer
+enable systemd-oomd.service
+# Plasma 6.8 ставит свой plasmalogin вместе с plasma-meta; нам нужен один DM.
+disable plasmalogin.service

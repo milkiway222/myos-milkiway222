@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MyOS Wallpaper
+Comment=Ставит обои MyOS при первом входе
+Exec=/usr/local/bin/myos-set-wallpaper
+NoDisplay=true
+X-KDE-autostart-after=panel
+X-GNOME-Autostart-enabled=true

@@ -1,0 +1,8 @@
+# Пакеты, которые нужны только в live-образе (установщик, диагностика).
+
+mkinitcpio-archiso
+arch-install-scripts
+syslinux
+testdisk
+smartmontools
+hdparm

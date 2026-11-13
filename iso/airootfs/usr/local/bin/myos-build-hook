@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Вызывается pacman-хуком при сборке live-образа.
+# Порядок важен: сначала общие настройки и skel, потом создание пользователя.
+/bin/bash /usr/local/bin/myos-configure
+/bin/bash /usr/local/bin/myos-live-user
+exit 0

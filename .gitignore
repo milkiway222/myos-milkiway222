@@ -1,0 +1,6 @@
+work/
+out/
+*.iso
+*.log
+iso/packages.x86_64
+iso/airootfs/usr/share/myos/packages.x86_64

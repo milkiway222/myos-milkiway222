@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  myos-install — простой установщик MyOS на диск (UEFI + GPT).
+#  Стирает указанный диск целиком. Запускать из live-системы:
+#
+#      sudo myos-install /dev/nvme0n1
+#      sudo myos-install /dev/sda
+# =============================================================================
+set -euo pipefail
+
+die() { echo "ОШИБКА: $*" >&2; exit 1; }
+step() { echo; echo "==> $*"; }
+
+DISK="${1:-}"
+
+[[ ${EUID} -eq 0 ]] || die "запусти через sudo."
+[[ -n "$DISK" ]] || die "укажи диск: sudo myos-install /dev/sdX"
+[[ -b "$DISK" ]] || die "$DISK — не блочное устройство."
+[[ -d "/sys/block/$(basename "$DISK")" ]] || die "$DISK — не целый диск (укажи /dev/sdX, а не раздел)."
+[[ -d /sys/firmware/efi ]] || die "нужна загрузка в режиме UEFI (Secure Boot выключен)."
+
+if [ -n "$(lsblk -no MOUNTPOINTS "$DISK" 2>/dev/null | tr -d '[:space:]')" ]; then
+    die "на $DISK есть смонтированные разделы. Отмонтируй их."
+fi
+
+echo "Диски в системе:"
+lsblk -d -o NAME,SIZE,MODEL
+echo
+echo "ВНИМАНИЕ: диск $DISK будет полностью стёрт, все данные пропадут."
+read -r -p "Напиши YES для продолжения: " answer
+[[ "$answer" == "YES" ]] || { echo "Отменено."; exit 1; }
+
+# ---------------------------------------------------------------- параметры
+read -r -p "Имя пользователя [user]: " USERNAME
+USERNAME="${USERNAME:-user}"
+USERNAME="${USERNAME,,}"
+[[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "недопустимое имя пользователя."
+
+while true; do
+    read -r -s -p "Пароль пользователя $USERNAME: " PASSWORD; echo
+    read -r -s -p "Повтори пароль: " PASSWORD2; echo
+    [[ -n "$PASSWORD" && "$PASSWORD" == "$PASSWORD2" ]] && break
+    echo "Пароли пустые или не совпадают, попробуй ещё раз."
+done
+
+read -r -p "Часовой пояс [Europe/Moscow]: " TZ
+TZ="${TZ:-Europe/Moscow}"
+[[ -f "/usr/share/zoneinfo/$TZ" ]] || die "нет такого часового пояса: $TZ"
+
+read -r -p "Имя компьютера [myos]: " HOSTNAME
+HOSTNAME="${HOSTNAME:-myos}"
+
+if ! getent hosts archlinux.org >/dev/null 2>&1; then
+    die "нет сети. Подключи Wi-Fi/Ethernet (в live-системе есть NetworkManager)."
+fi
+
+# ---------------------------------------------------------------- разметка
+step "Размечаю $DISK (GPT: ESP 1G + корень)"
+umount -R /mnt 2>/dev/null || true
+sgdisk --zap-all "$DISK" >/dev/null
+sgdisk -n 1:0:+1G -t 1:ef00 -c 1:ESP "$DISK" >/dev/null
+sgdisk -n 2:0:0   -t 2:8300 -c 2:MyOS "$DISK" >/dev/null
+partprobe "$DISK" 2>/dev/null || true
+udevadm settle 2>/dev/null || sleep 1
+
+if [[ "$DISK" =~ [0-9]$ ]]; then
+    ESP="${DISK}p1"; ROOT="${DISK}p2"
+else
+    ESP="${DISK}1"; ROOT="${DISK}2"
+fi
+
+step "Форматирую разделы"
+mkfs.fat -F32 -n ESP "$ESP" >/dev/null
+mkfs.ext4 -F -L MyOS "$ROOT" >/dev/null
+mount "$ROOT" /mnt
+mkdir -p /mnt/boot
+mount "$ESP" /mnt/boot
+
+# ---------------------------------------------------------------- пакеты
+step "Устанавливаю пакеты (скачивание ~1.5 ГБ, 10-25 минут)"
+mapfile -t PKGS < <(grep -hvE '^[[:space:]]*(#|$)' /usr/share/myos/packages.x86_64)
+pacstrap -K /mnt "${PKGS[@]}"
+
+step "Настраиваю систему"
+genfstab -U /mnt >> /mnt/etc/fstab
+sed -i 's/,relatime/,noatime/' /mnt/etc/fstab
+
+ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
+[[ -n "$ROOT_UUID" ]] || die "не удалось получить UUID корня."
+
+# Брендинг и скрипты из live-системы
+install -Dm644 /etc/skel/.config/autostart/myos-wallpaper.desktop \
+    /mnt/etc/skel/.config/autostart/myos-wallpaper.desktop
+install -Dm755 /usr/local/bin/myos-configure      /mnt/usr/local/bin/myos-configure
+install -Dm755 /usr/local/bin/myos-set-wallpaper  /mnt/usr/local/bin/myos-set-wallpaper
+install -Dm755 /usr/local/bin/myos-install        /mnt/usr/local/bin/myos-install
+install -Dm644 /usr/share/myos/packages.x86_64    /mnt/usr/share/myos/packages.x86_64
+install -Dm644 /usr/share/wallpapers/MyOS/contents/images/1920x1080.png \
+    /mnt/usr/share/wallpapers/MyOS/contents/images/1920x1080.png
+
+echo "$HOSTNAME" > /mnt/etc/hostname
+ln -sf "/usr/share/zoneinfo/$TZ" /mnt/etc/localtime
+
+# Пользователь и sudo
+arch-chroot /mnt useradd -m -c "$USERNAME" \
+    -G wheel,video,audio,input,storage,optical,network,power \
+    -s /bin/bash "$USERNAME"
+printf '%s:%s\n' "$USERNAME" "$PASSWORD" | arch-chroot /mnt chpasswd
+passwd -l root -R /mnt >/dev/null 2>&1 || true
+echo '%wheel ALL=(ALL:ALL) ALL' > /mnt/etc/sudoers.d/10-wheel
+chmod 440 /mnt/etc/sudoers.d/10-wheel
+
+# Брендинг, локали, службы, оптимизации
+arch-chroot /mnt /usr/local/bin/myos-configure
+
+# Загрузчик systemd-boot
+step "Ставлю systemd-boot"
+if ! arch-chroot /mnt bootctl --path=/boot install; then
+    echo "Не удалось записать NVRAM — ставлю загрузчик без записи в прошивку."
+    echo "После перезагрузки выбери MyOS в загрузочном меню вручную."
+    arch-chroot /mnt bootctl --path=/boot install --no-variables
+fi
+cat > /mnt/boot/loader/loader.conf <<'EOF'
+default myos.conf
+timeout 3
+editor no
+EOF
+cat > /mnt/boot/loader/entries/myos.conf <<EOF
+title   MyOS
+linux   /vmlinuz-linux
+initrd  /initramfs-linux.img
+options root=UUID=$ROOT_UUID rw quiet loglevel=3 nowatchdog
+EOF
+
+arch-chroot /mnt mkinitcpio -P
+arch-chroot /mnt hwclock --systohc 2>/dev/null || true
+
+# Экономия места: чистим кэш пакетов внутри установленной системы
+arch-chroot /mnt pacman -Scc --noconfirm >/dev/null 2>&1 || true
+
+step "Завершаю"
+sync
+umount -R /mnt
+echo
+echo "Готово! Вынь флешку и перезагрузися."
+echo "Войди как $USERNAME, пароль — тот, что ты задал."
+echo "Secure Boot должен быть выключен."

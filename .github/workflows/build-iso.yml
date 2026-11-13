@@ -1,0 +1,41 @@
+name: Build MyOS ISO
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Build ISO in Arch container
+        run: |
+          docker run --rm --privileged \
+            -v "$PWD:/build" -w /build \
+            archlinux:latest \
+            bash -lc "pacman -Syu --noconfirm --needed archiso >/dev/null && bash ./build.sh"
+
+      - name: Show result
+        run: |
+          df -h /
+          ls -lh out/
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: myos-iso
+          path: out/*.iso
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

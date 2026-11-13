@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  myos-configure — брендинг и системные настройки MyOS.
+#  Запускается автоматически pacman-хуком при сборке live-образа
+#  и вручную установщиком внутри установленной системы.
+#  Скрипт идемпотентен: его можно запускать много раз.
+# =============================================================================
+
+log() { echo "[myos] $*"; }
+
+WALLPAPER_DIR="/usr/share/wallpapers/MyOS/contents/images"
+WALLPAPER="$WALLPAPER_DIR/1920x1080.png"
+
+# --------------------------------------------------------------- брендинг
+cat > /usr/lib/os-release <<'EOF'
+NAME="MyOS"
+PRETTY_NAME="MyOS"
+ID=myos
+ID_LIKE=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;23;147;209"
+HOME_URL="https://example.org/myos"
+DOCUMENTATION_URL="https://wiki.archlinux.org"
+SUPPORT_URL="https://example.org/myos/support"
+BUG_REPORT_URL="https://example.org/myos/issues"
+LOGO=myos-logo
+EOF
+
+ln -sfn ../usr/lib/os-release /etc/os-release
+# Имя компьютера задаёт установщик; в live-системе ставим значение по умолчанию.
+if [ ! -s /etc/hostname ]; then
+    echo "myos" > /etc/hostname
+fi
+
+cat > /etc/issue <<'EOF'
+MyOS \r (\l)
+
+EOF
+
+cat > /etc/motd <<'EOF'
+
+  MyOS — твоя система.
+  Установка на диск:  sudo myos-install /dev/sdX
+
+EOF
+
+# --------------------------------------------------------------- локали
+if [ -f /etc/locale.gen ]; then
+    sed -i -E 's/^#(ru_RU\.UTF-8 UTF-8)/\1/' /etc/locale.gen
+    sed -i -E 's/^#(en_US\.UTF-8 UTF-8)/\1/' /etc/locale.gen
+    locale-gen || true
+fi
+echo 'LANG=ru_RU.UTF-8' > /etc/locale.conf
+echo 'KEYMAP=ru' > /etc/vconsole.conf
+
+# --------------------------------------------------- оптимизация под отклик
+cat > /etc/sysctl.d/99-myos.conf <<'EOF'
+vm.swappiness = 10
+vm.vfs_cache_pressure = 50
+vm.dirty_bytes = 268435456
+vm.dirty_background_bytes = 67108864
+kernel.nmi_watchdog = 0
+EOF
+
+cat > /etc/systemd/zram-generator.conf <<'EOF'
+[zram0]
+zram-size = min(ram / 2, 8192)
+compression-algorithm = zstd
+EOF
+
+# KDE: без анимаций, без файлового индексатора, тёмная схема
+mkdir -p /etc/xdg
+cat > /etc/xdg/kdeglobals <<'EOF'
+[General]
+ColorScheme=BreezeDark
+
+[KDE]
+AnimationDurationFactor=0
+SingleClick=false
+EOF
+
+cat > /etc/xdg/kwinrc <<'EOF'
+[Compositing]
+LatencyPolicy=Low
+AllowTearing=true
+EOF
+
+cat > /etc/xdg/baloofilerc <<'EOF'
+[Basic Settings]
+Indexing-Enabled=false
+EOF
+
+# Настройки по умолчанию для новых пользователей
+mkdir -p /etc/skel/.config
+cp -f /etc/xdg/kdeglobals /etc/skel/.config/kdeglobals
+cp -f /etc/xdg/baloofilerc /etc/skel/.config/baloofilerc
+
+# ------------------------------------------------------------- оформление SDDM
+# Берём готовую тему из пакета sddm и подменяем фон на наш.
+SDDM_SRC=""
+for candidate in /usr/share/sddm/themes/elarun /usr/share/sddm/themes/breeze /usr/share/sddm/themes/maya; do
+    if [ -d "$candidate" ]; then SDDM_SRC="$candidate"; break; fi
+done
+
+if [ -n "$SDDM_SRC" ]; then
+    rm -rf /usr/share/sddm/themes/myos
+    cp -r "$SDDM_SRC" /usr/share/sddm/themes/myos
+
+    if [ -f "$WALLPAPER" ]; then
+        if [ -d /usr/share/sddm/themes/myos/images ]; then
+            cp -f "$WALLPAPER" /usr/share/sddm/themes/myos/images/background.png
+        fi
+        cp -f "$WALLPAPER" /usr/share/sddm/themes/myos/background.png 2>/dev/null || true
+
+        theme_conf=/usr/share/sddm/themes/myos/theme.conf
+        if [ -f "$theme_conf" ]; then
+            if grep -qE '^[[:space:]]*background[[:space:]]*=' "$theme_conf"; then
+                sed -i -E "s|^[[:space:]]*background[[:space:]]*=.*|background=images/background.png|" "$theme_conf"
+            else
+                printf '\nbackground=images/background.png\n' >> "$theme_conf"
+            fi
+        fi
+    fi
+
+    mkdir -p /etc/sddm.conf.d
+    cat > /etc/sddm.conf.d/20-myos-theme.conf <<'EOF'
+[Theme]
+Current=myos
+EOF
+fi
+
+# --------------------------------------------------------------- службы
+# В Plasma 6.8 вместе с plasma-meta приходит plasma-login-manager.
+# Мы используем SDDM, поэтому второй менеджер входа отключаем ДО включения
+# SDDM: иначе оба могут претендовать на alias display-manager.service.
+systemctl disable plasmalogin.service >/dev/null 2>&1 || true
+systemctl mask plasmalogin.service >/dev/null 2>&1 || true
+
+for unit in NetworkManager.service sddm.service bluetooth.service \
+            systemd-timesyncd.service fstrim.timer systemd-oomd.service; do
+    systemctl enable "$unit" >/dev/null 2>&1 || log "не удалось включить $unit"
+done
+
+log "готово"
