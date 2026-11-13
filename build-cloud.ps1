@@ -19,6 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
 $root = $PSScriptRoot
 
 if (-not $OutDir) {
@@ -114,7 +115,7 @@ try {
 
     # ------------------------------------------------------------ репозиторий
     Write-Step "Репозиторий $Repo"
-    & $Gh repo view $Repo *> $null
+    & $Gh repo view $Repo 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         & $Gh repo create $RepoName --public --add-readme `
             --description 'MyOS - Arch Linux + KDE Plasma' | Out-Host
@@ -135,10 +136,16 @@ try {
         & $Git config user.email "$Login@users.noreply.github.com"
         & $Git config core.autocrlf false
         & $Git add -A
-        & $Git commit -m "MyOS build $(Get-Date -Format 'yyyy-MM-dd HH:mm')" 2>&1 | Out-Host
+        $changes = & $Git status --porcelain
+        if ($changes) {
+            & $Git commit -m "MyOS build $(Get-Date -Format 'yyyy-MM-dd HH:mm')" 2>&1 | Out-Host
+        }
         & $Git branch -M main
         & $Gh auth setup-git | Out-Host
-        & $Git remote remove origin 2>$null | Out-Null
+        $remotes = & $Git remote
+        if ($remotes -contains 'origin') {
+            & $Git remote remove origin | Out-Null
+        }
         & $Git remote add origin "https://github.com/$Repo.git"
         & $Git push -u origin main --force 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'git push завершился с ошибкой.' }
@@ -146,7 +153,7 @@ try {
     finally {
         Pop-Location
     }
-    & $Gh repo edit $Repo --default-branch main *> $null
+    & $Gh repo edit $Repo --default-branch main 2>&1 | Out-Null
     Write-Ok 'проект загружен'
 
     # ------------------------------------------------------------ сборка
