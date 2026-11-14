@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Создаёт пользователя live-системы. Пароль: myos
+# Создание пользователя live-системы MyOS. Пользователь: myos, пароль: myos.
 set -u
 
 if ! id myos >/dev/null 2>&1; then
@@ -8,8 +8,8 @@ if ! id myos >/dev/null 2>&1; then
         -s /bin/bash myos
 fi
 
-# Пароль выставляем всегда: служба может запускаться повторно,
-# а пользователь мог быть создан pacman-хуком ещё на этапе сборки.
+# Пароль фиксированный: удобно для live-сессии, внутри установленной системы
+# пользователь создаётся заново с паролем, который вводит установщик.
 echo 'myos:myos' | chpasswd
 
 passwd -l root >/dev/null 2>&1 || true
@@ -17,5 +17,14 @@ passwd -l root >/dev/null 2>&1 || true
 echo 'myos ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/10-myos-live
 chmod 440 /etc/sudoers.d/10-myos-live
 
-# Автостарт установщика не нужен: пользователь сам запускает sudo myos-install.
-echo "[myos] live user готов (логин myos / пароль myos)"
+# Иконка установщика на рабочем столе live-сессии.
+DESKTOP_FILE=/usr/share/applications/myos-installer.desktop
+if [ -f "$DESKTOP_FILE" ]; then
+    for sub in "Desktop" "Рабочий стол"; do
+        install -d -o myos -g myos "/home/myos/$sub" 2>/dev/null || continue
+        install -m755 -o myos -g myos "$DESKTOP_FILE" \
+            "/home/myos/$sub/Установить MyOS.desktop" 2>/dev/null || true
+    done
+fi
+
+echo "[myos] live user готов (пользователь myos / пароль myos)"

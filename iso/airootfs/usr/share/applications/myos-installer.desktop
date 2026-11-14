@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Установить MyOS
+Comment=Установка MyOS на компьютер
+Exec=sudo /usr/local/bin/myos-install
+Icon=system-software-install
+Terminal=true
+Categories=System;
+Keywords=install;установка;myos;

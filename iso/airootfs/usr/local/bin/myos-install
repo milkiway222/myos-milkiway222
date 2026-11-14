@@ -1,91 +1,278 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  myos-install — простой установщик MyOS на диск (UEFI + GPT).
-#  Стирает указанный диск целиком. Запускать из live-системы:
+#  myos-install — установщик MyOS (UEFI + GPT).
 #
-#      sudo myos-install /dev/nvme0n1
-#      sudo myos-install /dev/sda
+#  Запуск из live-системы:
+#      sudo myos-install              меню выбора диска
+#      sudo myos-install /dev/sda     без меню, сразу указанный диск
+#
+#  ВНИМАНИЕ: выбранный диск стирается целиком, все данные теряются.
 # =============================================================================
-set -euo pipefail
+set -uo pipefail
 
-die() { echo "ОШИБКА: $*" >&2; exit 1; }
-step() { echo; echo "==> $*"; }
+if [[ -t 1 ]]; then
+    RED=$'\e[1;31m'; GREEN=$'\e[1;32m'; YELLOW=$'\e[1;33m'
+    BLUE=$'\e[1;34m'; CYAN=$'\e[1;36m'; BOLD=$'\e[1m'; OFF=$'\e[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; OFF=''
+fi
 
-DISK="${1:-}"
+die()  { echo; echo "${RED}ОШИБКА:${OFF} $*" >&2; echo; exit 1; }
+step() { echo; echo "${BLUE}==>${OFF} ${BOLD}$*${OFF}"; }
+ok()   { echo "  ${GREEN}OK${OFF} $*"; }
+warn() { echo "  ${YELLOW}!${OFF} $*"; }
 
 [[ ${EUID} -eq 0 ]] || die "запусти через sudo."
-[[ -n "$DISK" ]] || die "укажи диск: sudo myos-install /dev/sdX"
-[[ -b "$DISK" ]] || die "$DISK — не блочное устройство."
-[[ -d "/sys/block/$(basename "$DISK")" ]] || die "$DISK — не целый диск (укажи /dev/sdX, а не раздел)."
 [[ -d /sys/firmware/efi ]] || die "нужна загрузка в режиме UEFI (Secure Boot выключен)."
 
-if [ -n "$(lsblk -no MOUNTPOINTS "$DISK" 2>/dev/null | tr -d '[:space:]')" ]; then
-    die "на $DISK есть смонтированные разделы. Отмонтируй их."
+# ------------------------------------------------ себя и иконку на рабочий стол
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+[[ -n "$SELF" ]] || SELF="${BASH_SOURCE[0]}"
+
+if [[ "$SELF" != "/usr/local/bin/myos-install" ]]; then
+    install -m755 "$SELF" /usr/local/bin/myos-install 2>/dev/null || true
 fi
 
-echo "Диски в системе:"
-lsblk -d -o NAME,SIZE,MODEL
+DESKTOP_FILE=/usr/share/applications/myos-installer.desktop
+if [[ ! -f "$DESKTOP_FILE" ]]; then
+    mkdir -p /usr/share/applications
+    cat > "$DESKTOP_FILE" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Установить MyOS
+Comment=Установка MyOS на компьютер
+Exec=sudo /usr/local/bin/myos-install
+Icon=system-software-install
+Terminal=true
+Categories=System;
+Keywords=install;установка;myos;
+DESKTOP
+    chmod 644 "$DESKTOP_FILE"
+fi
+
+ICON_USER="${SUDO_USER:-}"
+if [[ -n "$ICON_USER" && "$ICON_USER" != "root" ]]; then
+    ICON_HOME="$(getent passwd "$ICON_USER" | cut -d: -f6)"
+    if [[ -n "$ICON_HOME" && -d "$ICON_HOME" ]]; then
+        for sub in "Desktop" "Рабочий стол"; do
+            install -d -o "$ICON_USER" -g "$ICON_USER" "$ICON_HOME/$sub" 2>/dev/null || continue
+            install -m755 -o "$ICON_USER" -g "$ICON_USER" \
+                "$DESKTOP_FILE" "$ICON_HOME/$sub/Установить MyOS.desktop" 2>/dev/null || true
+        done
+    fi
+fi
+
+# ------------------------------------------------------------- выбор диска
+DISK="${1:-}"
+
+if [[ -z "$DISK" ]]; then
+    live_disk=""
+    if mountpoint -q /run/archiso/bootmnt 2>/dev/null; then
+        live_src="$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)"
+        if [[ -n "$live_src" ]]; then
+            live_src="$(readlink -f "$live_src" 2>/dev/null || echo "$live_src")"
+            live_disk="$(lsblk -no PKNAME "$live_src" 2>/dev/null | head -n1)"
+        fi
+    fi
+
+    d_name=(); d_size=(); d_model=(); d_note=(); d_win=()
+
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        base="${name#/dev/}"
+        [[ "$base" == "$live_disk" ]] && continue
+        case "$base" in
+            zram*|loop*|sr*|ram*) continue ;;
+        esac
+        bytes="$(lsblk -bdno SIZE "$name" 2>/dev/null || echo 0)"
+        [[ "$bytes" =~ ^[0-9]+$ ]] || continue
+        (( bytes >= 16 * 1024 * 1024 * 1024 )) || continue
+
+        human="$(lsblk -dno SIZE "$name" 2>/dev/null | xargs)"
+        model="$(lsblk -dno MODEL "$name" 2>/dev/null | xargs)"
+        [[ -n "$model" ]] || model="диск"
+        fs_info="$(lsblk -no FSTYPE,LABEL "$name" 2>/dev/null | tail -n +2)"
+        note="без файловых систем"; win=0
+        if grep -qiE 'ntfs' <<< "$fs_info"; then
+            note="Windows / NTFS"; win=1
+        elif grep -qiE 'myos' <<< "$fs_info"; then
+            note="старая установка MyOS"
+        elif [[ -n "$(tr -d '[:space:]' <<< "$fs_info")" ]]; then
+            note="есть разделы"
+        fi
+        if [[ -n "$(lsblk -no MOUNTPOINTS "$name" 2>/dev/null | tr -d '[:space:]')" ]]; then
+            note="$note, есть смонтированные разделы"
+        fi
+
+        d_name+=("$name"); d_size+=("$human"); d_model+=("$model")
+        d_note+=("$note"); d_win+=("$win")
+    done < <(lsblk -dpno NAME 2>/dev/null)
+
+    if (( ${#d_name[@]} == 0 )); then
+        clear 2>/dev/null || true
+        echo "${RED}${BOLD}Не найдено ни одного диска для установки.${OFF}"
+        echo
+        echo "  Нужен внутренний диск объёмом от 16 ГБ."
+        echo "  Проверь, что он подключён, и запусти установщик снова."
+        echo
+        read -r -p "  Нажми Enter, чтобы закрыть..." _ || true
+        exit 1
+    fi
+
+    while true; do
+        clear 2>/dev/null || true
+        echo "${BOLD}${CYAN}        УСТАНОВКА MyOS НА КОМПЬЮТЕР${OFF}"
+        echo
+        echo "  Выбери диск, на который установить систему."
+        echo "  ${RED}Все данные на выбранном диске будут стёрты.${OFF}"
+        echo
+        for i in "${!d_name[@]}"; do
+            n=$((i + 1))
+            printf '   %2d) %-8s %-26s %s\n' "$n" "${d_size[$i]}" "${d_model[$i]}" "${d_note[$i]}"
+        done
+        echo
+        read -r -p "  Номер диска (Q — выход): " sel
+        case "$sel" in
+            q|Q) echo "  Отменено."; exit 1 ;;
+            '') continue ;;
+        esac
+        [[ "$sel" =~ ^[0-9]+$ ]] || { warn "Введи номер диска."; sleep 1; continue; }
+        idx=$((10#$sel - 1))
+        if (( idx >= 0 && idx < ${#d_name[@]} )); then
+            DISK="${d_name[$idx]}"
+            sel_size="${d_size[$idx]}"
+            sel_model="${d_model[$idx]}"
+            sel_note="${d_note[$idx]}"
+            sel_win="${d_win[$idx]}"
+            break
+        fi
+        warn "Нет диска с таким номером."
+        sleep 1
+    done
+else
+    [[ -b "$DISK" ]] || die "$DISK — не блочное устройство."
+    [[ -d "/sys/block/$(basename "$DISK")" ]] || die "$DISK — не целый диск (укажи /dev/sdX, а не раздел)."
+    sel_size="$(lsblk -dno SIZE "$DISK" 2>/dev/null | xargs)"
+    sel_model="$(lsblk -dno MODEL "$DISK" 2>/dev/null | xargs)"
+    sel_note=""
+    sel_win=0
+fi
+
+if [[ -n "$(lsblk -no MOUNTPOINTS "$DISK" 2>/dev/null | tr -d '[:space:]')" ]]; then
+    warn "на $DISK есть смонтированные разделы — отмонтирую их"
+    while IFS= read -r mp; do
+        [[ -n "$mp" ]] || continue
+        if [[ "$mp" == "[SWAP]" ]]; then
+            swapoff -a 2>/dev/null || true
+        else
+            umount -R "$mp" 2>/dev/null || true
+        fi
+    done < <(lsblk -no MOUNTPOINTS "$DISK" 2>/dev/null)
+    if [[ -n "$(lsblk -no MOUNTPOINTS "$DISK" 2>/dev/null | tr -d '[:space:]')" ]]; then
+        die "не удалось отмонтировать разделы $DISK. Закрой программы, которые их используют, и запусти установщик снова."
+    fi
+fi
+
+# ------------------------------------------------------- подтверждение диска
+clear 2>/dev/null || true
+echo "${BOLD}${CYAN}        ПРОВЕРКА ПЕРЕД УСТАНОВКОЙ${OFF}"
 echo
-echo "ВНИМАНИЕ: диск $DISK будет полностью стёрт, все данные пропадут."
-read -r -p "Напиши YES для продолжения: " answer
-[[ "$answer" == "YES" ]] || { echo "Отменено."; exit 1; }
+echo "  Диск:        ${BOLD}$DISK${OFF}"
+echo "  Размер:      $sel_size"
+echo "  Модель:      $sel_model"
+[[ -n "$sel_note" ]] && echo "  Содержимое:  $sel_note"
+echo
+if (( sel_win )); then
+    echo "  ${RED}${BOLD}На этом диске найдена Windows (NTFS).${OFF}"
+    echo "  ${RED}Windows и все файлы на этом диске будут полностью удалены.${OFF}"
+    echo
+fi
+echo "  ${RED}${BOLD}ЭТО ДЕЙСТВИЕ НЕЛЬЗЯ ОТМЕНИТЬ.${OFF}"
+echo
+read -r -p "  Напиши YES заглавными буквами, чтобы стереть диск: " answer
+[[ "$answer" == "YES" ]] || die "Отменено. Ничего не изменено."
 
-# ---------------------------------------------------------------- параметры
-read -r -p "Имя пользователя [user]: " USERNAME
-USERNAME="${USERNAME:-user}"
+# --------------------------------------------------------------- настройки
+clear 2>/dev/null || true
+echo "${BOLD}${CYAN}        НАСТРОЙКИ СИСТЕМЫ${OFF}"
+echo
+read -r -p "  Имя пользователя (латиницей) [myos]: " USERNAME
+USERNAME="${USERNAME:-myos}"
 USERNAME="${USERNAME,,}"
-[[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "недопустимое имя пользователя."
-
+[[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "недопустимое имя пользователя: только латиница, цифры, _ и -."
+echo
 while true; do
-    read -r -s -p "Пароль пользователя $USERNAME: " PASSWORD; echo
-    read -r -s -p "Повтори пароль: " PASSWORD2; echo
-    [[ -n "$PASSWORD" && "$PASSWORD" == "$PASSWORD2" ]] && break
-    echo "Пароли пустые или не совпадают, попробуй ещё раз."
+    read -r -s -p "  Пароль для $USERNAME (ввод не виден): " PASSWORD; echo
+    read -r -s -p "  Повтори пароль: " PASSWORD2; echo
+    if [[ -n "$PASSWORD" && "$PASSWORD" == "$PASSWORD2" ]]; then break; fi
+    warn "Пароли пустые или не совпадают. Попробуй ещё раз."
+    echo
 done
-
-read -r -p "Часовой пояс [Europe/Moscow]: " TZ
+echo
+read -r -p "  Часовой пояс [Europe/Moscow]: " TZ
 TZ="${TZ:-Europe/Moscow}"
 [[ -f "/usr/share/zoneinfo/$TZ" ]] || die "нет такого часового пояса: $TZ"
-
-read -r -p "Имя компьютера [myos]: " HOSTNAME
+read -r -p "  Имя компьютера [myos]: " HOSTNAME
 HOSTNAME="${HOSTNAME:-myos}"
-
+echo
 if ! getent hosts archlinux.org >/dev/null 2>&1; then
-    die "нет сети. Подключи Wi-Fi/Ethernet (в live-системе есть NetworkManager)."
+    die "нет интернета. Подключи Wi-Fi (значок внизу справа) и запусти установщик снова."
 fi
 
-# ---------------------------------------------------------------- разметка
+# ------------------------------------------------------------ финальная проверка
+clear 2>/dev/null || true
+echo "${BOLD}${CYAN}        ВСЁ ГОТОВО К УСТАНОВКЕ${OFF}"
+echo
+echo "  Диск:         $DISK ($sel_size, $sel_model)"
+echo "  Пользователь: $USERNAME"
+echo "  Часовой пояс: $TZ"
+echo "  Имя ПК:       $HOSTNAME"
+echo
+echo "  Сейчас начнётся разметка диска и скачивание пакетов (~1.5 ГБ)."
+echo "  Это займёт 10-25 минут. Не закрывай окно и не выключай компьютер."
+echo
+read -r -p "  Напиши YES, чтобы начать: " final
+[[ "$final" == "YES" ]] || die "Отменено."
+
+# =============================================================== установка
+set -euo pipefail
+
 step "Размечаю $DISK (GPT: ESP 1G + корень)"
 umount -R /mnt 2>/dev/null || true
-sgdisk --zap-all "$DISK" >/dev/null
+sgdisk --zap-all "$DISK" >/dev/null || die "не удалось разметить $DISK"
 sgdisk -n 1:0:+1G -t 1:ef00 -c 1:ESP "$DISK" >/dev/null
 sgdisk -n 2:0:0   -t 2:8300 -c 2:MyOS "$DISK" >/dev/null
 partprobe "$DISK" 2>/dev/null || true
 udevadm settle 2>/dev/null || sleep 1
 
 if [[ "$DISK" =~ [0-9]$ ]]; then
-    ESP="${DISK}p1"; ROOT="${DISK}p2"
+    ESP="${DISK}p1"; ROOT_PART="${DISK}p2"
 else
-    ESP="${DISK}1"; ROOT="${DISK}2"
+    ESP="${DISK}1"; ROOT_PART="${DISK}2"
 fi
 
-step "Форматирую разделы"
-mkfs.fat -F32 -n ESP "$ESP" >/dev/null
-mkfs.ext4 -F -L MyOS "$ROOT" >/dev/null
-mount "$ROOT" /mnt
-mkdir -p /mnt/boot
-mount "$ESP" /mnt/boot
+for _ in $(seq 1 40); do [[ -b "$ESP" && -b "$ROOT_PART" ]] && break; sleep 0.5; done
+[[ -b "$ESP" && -b "$ROOT_PART" ]] || die "разделы $ESP / $ROOT_PART не появились."
+ok "разделы созданы"
 
-# ---------------------------------------------------------------- пакеты
+step "Форматирую разделы"
+mkfs.fat -F32 -n ESP "$ESP" >/dev/null || die "не удалось отформатировать $ESP"
+mkfs.ext4 -F -L MyOS "$ROOT_PART" >/dev/null || die "не удалось отформатировать $ROOT_PART"
+mount "$ROOT_PART" /mnt || die "не удалось смонтировать $ROOT_PART"
+mkdir -p /mnt/boot
+mount "$ESP" /mnt/boot || die "не удалось смонтировать $ESP"
+ok "разделы готовы"
+
 step "Устанавливаю пакеты (скачивание ~1.5 ГБ, 10-25 минут)"
 mapfile -t PKGS < <(grep -hvE '^[[:space:]]*(#|$)' /usr/share/myos/packages.x86_64)
-pacstrap -K /mnt "${PKGS[@]}"
+pacstrap -K /mnt "${PKGS[@]}" || die "не удалось установить пакеты. Проверь интернет и свободное место."
+ok "пакеты установлены"
 
 step "Настраиваю систему"
-genfstab -U /mnt >> /mnt/etc/fstab
+genfstab -U /mnt >> /mnt/etc/fstab || die "не удалось создать /etc/fstab"
 sed -i 's/,relatime/,noatime/' /mnt/etc/fstab
 
-ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
+ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
 [[ -n "$ROOT_UUID" ]] || die "не удалось получить UUID корня."
 
 # Брендинг и скрипты из live-системы
@@ -93,7 +280,7 @@ install -Dm644 /etc/skel/.config/autostart/myos-wallpaper.desktop \
     /mnt/etc/skel/.config/autostart/myos-wallpaper.desktop
 install -Dm755 /usr/local/bin/myos-configure      /mnt/usr/local/bin/myos-configure
 install -Dm755 /usr/local/bin/myos-set-wallpaper  /mnt/usr/local/bin/myos-set-wallpaper
-install -Dm755 /usr/local/bin/myos-install        /mnt/usr/local/bin/myos-install
+install -Dm755 "$SELF"                            /mnt/usr/local/bin/myos-install
 install -Dm644 /usr/share/myos/packages.x86_64    /mnt/usr/share/myos/packages.x86_64
 install -Dm644 /usr/share/wallpapers/MyOS/contents/images/1920x1080.png \
     /mnt/usr/share/wallpapers/MyOS/contents/images/1920x1080.png
@@ -104,21 +291,22 @@ ln -sf "/usr/share/zoneinfo/$TZ" /mnt/etc/localtime
 # Пользователь и sudo
 arch-chroot /mnt useradd -m -c "$USERNAME" \
     -G wheel,video,audio,input,storage,optical,network,power \
-    -s /bin/bash "$USERNAME"
-printf '%s:%s\n' "$USERNAME" "$PASSWORD" | arch-chroot /mnt chpasswd
+    -s /bin/bash "$USERNAME" || die "не удалось создать пользователя $USERNAME"
+printf '%s:%s\n' "$USERNAME" "$PASSWORD" | arch-chroot /mnt chpasswd || die "не удалось задать пароль"
 passwd -l root -R /mnt >/dev/null 2>&1 || true
 echo '%wheel ALL=(ALL:ALL) ALL' > /mnt/etc/sudoers.d/10-wheel
 chmod 440 /mnt/etc/sudoers.d/10-wheel
 
 # Брендинг, локали, службы, оптимизации
-arch-chroot /mnt /usr/local/bin/myos-configure
+arch-chroot /mnt /usr/local/bin/myos-configure || die "ошибка настройки системы."
+ok "система настроена"
 
 # Загрузчик systemd-boot
 step "Ставлю systemd-boot"
 if ! arch-chroot /mnt bootctl --path=/boot install; then
-    echo "Не удалось записать NVRAM — ставлю загрузчик без записи в прошивку."
-    echo "После перезагрузки выбери MyOS в загрузочном меню вручную."
-    arch-chroot /mnt bootctl --path=/boot install --no-variables
+    echo "  Не удалось записать NVRAM — ставлю загрузчик без записи в прошивку."
+    echo "  После перезагрузки выбери MyOS в загрузочном меню вручную."
+    arch-chroot /mnt bootctl --path=/boot install --no-variables || die "не удалось установить systemd-boot."
 fi
 cat > /mnt/boot/loader/loader.conf <<'EOF'
 default myos.conf
@@ -132,8 +320,9 @@ initrd  /initramfs-linux.img
 options root=UUID=$ROOT_UUID rw quiet loglevel=3 nowatchdog
 EOF
 
-arch-chroot /mnt mkinitcpio -P
+arch-chroot /mnt mkinitcpio -P || die "ошибка создания initramfs."
 arch-chroot /mnt hwclock --systohc 2>/dev/null || true
+ok "загрузчик установлен"
 
 # Экономия места: чистим кэш пакетов внутри установленной системы
 arch-chroot /mnt pacman -Scc --noconfirm >/dev/null 2>&1 || true
@@ -141,7 +330,15 @@ arch-chroot /mnt pacman -Scc --noconfirm >/dev/null 2>&1 || true
 step "Завершаю"
 sync
 umount -R /mnt
+
 echo
-echo "Готово! Вынь флешку и перезагрузися."
-echo "Войди как $USERNAME, пароль — тот, что ты задал."
-echo "Secure Boot должен быть выключен."
+echo "${GREEN}${BOLD}ГОТОВО! MyOS установлена.${OFF}"
+echo
+echo "  1. Выключи компьютер."
+echo "  2. Вынь флешку."
+echo "  3. Включи компьютер — загрузится MyOS."
+echo
+echo "  Вход: пользователь ${BOLD}$USERNAME${OFF}, пароль — тот, что ты задал."
+echo "  Secure Boot должен быть выключен."
+echo
+read -r -p "Нажми Enter, чтобы закрыть окно..." _ || true

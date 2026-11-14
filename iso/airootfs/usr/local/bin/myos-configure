@@ -40,7 +40,7 @@ EOF
 cat > /etc/motd <<'EOF'
 
   MyOS — твоя система.
-  Установка на диск:  sudo myos-install /dev/sdX
+  Установка: меню «Установить MyOS» или sudo myos-install
 
 EOF
 
